@@ -3,6 +3,7 @@
 ## My top solution for [AI200 Mar 2022: Human or Robot? Capstone Competition](https://www.kaggle.com/competitions/ai200-mar-2022-human-or-bot) 
 
 Please view my codes at this [link](https://github.com/teorongchang/ai200_bot_detection_ml_pipeline/blob/main/notebooks/teorongchang_Capstone_Project_AI200.ipynb)
+Original repo [link](https://github.com/teorongchang/ai200-capstone-project)
 
 ## **Overview of project**
 
