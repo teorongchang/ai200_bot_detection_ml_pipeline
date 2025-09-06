@@ -1,0 +1,287 @@
+# src/data/data_loader.py
+"""
+Data loading utilities for bot detection pipeline.
+Handles loading and validation of bidding data for the competition.
+"""
+
+import pandas as pd
+import numpy as np
+from typing import Tuple, Optional, Dict, Any
+import os
+import logging
+
+# Configure logging
+logger = logging.getLogger(__name__)
+
+def load_csv_data(filepath: str, required_columns: Optional[list] = None) -> pd.DataFrame:
+    """
+    Load CSV file with error handling and basic validation.
+    I got tired of files not existing and crashing my code, so added proper checks.
+    
+    Parameters:
+    filepath: Path to CSV file
+    required_columns: List of required columns to validate
+    
+    Returns:
+    pd.DataFrame: Loaded data
+    """
+    try:
+        # Always check if file exists first - learned this the hard way
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Data file not found: {filepath}")
+        
+        # Load the CSV data
+        df = pd.read_csv(filepath)
+        logger.info(f"Loaded {len(df)} rows from {filepath}")
+        
+        # Validate that we have the columns we expect
+        if required_columns:
+            missing_columns = [col for col in required_columns if col not in df.columns]
+            if missing_columns:
+                raise ValueError(f"Missing required columns: {missing_columns}")
+        
+        # Print some basic info so I know what I'm working with
+        logger.info(f"Data shape: {df.shape}")
+        logger.info(f"Columns: {df.columns.tolist()}")
+        
+        # Catch empty files early
+        if df.empty:
+            logger.warning(f"Loaded dataframe is empty: {filepath}")
+        
+        return df
+        
+    except Exception as e:
+        logger.error(f"Error loading data from {filepath}: {str(e)}")
+        raise
+
+def load_training_data(bidders_path: str, bids_path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Load the main competition datasets.
+    Sets up the bidders and bids data with proper validation.
+    
+    Parameters:
+    bidders_path: Path to bidders CSV file
+    bids_path: Path to bids CSV file
+    
+    Returns:
+    Tuple[pd.DataFrame, pd.DataFrame]: (bidders_df, bids_df)
+    """
+    # These are the column names from the competition description
+    expected_bidder_columns = ['bidder_id', 'payment_account', 'address', 'outcome']
+    expected_bid_columns = ['bid_id', 'bidder_id', 'auction', 'merchandise', 'device', 'time', 'country', 'ip', 'url']
+    
+    # Load both datasets with validation
+    print("Loading bidders data...")
+    bidders_df = load_csv_data(bidders_path, expected_bidder_columns)
+    
+    print("Loading bids data...")
+    bids_df = load_csv_data(bids_path, expected_bid_columns)
+    
+    # Run my data quality checks
+    validation_results = validate_training_data(bidders_df, bids_df)
+    
+    if not validation_results['is_valid']:
+        print("Data validation issues found:")
+        for issue in validation_results['issues']:
+            print(f"  - {issue}")
+    
+    # Show basic stats that I always want to see
+    print(f"\nData loaded successfully!")
+    print(f"Bidders: {len(bidders_df)} rows")
+    print(f"Bids: {len(bids_df)} rows")
+    print(f"Class distribution:")
+    print(bidders_df['outcome'].value_counts())
+    
+    return bidders_df, bids_df
+
+def load_test_data(test_bidders_path: str, test_bids_path: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    """
+    Load test datasets for making final predictions.
+    Test data has same structure but no outcome column.
+    
+    Parameters:
+    test_bidders_path: Path to test bidders CSV file
+    test_bids_path: Path to test bids CSV file
+    
+    Returns:
+    Tuple[pd.DataFrame, pd.DataFrame]: (test_bidders_df, test_bids_df)
+    """
+    # Test bidders don't have outcome column since that's what we're predicting
+    expected_test_bidder_columns = ['bidder_id', 'payment_account', 'address']
+    expected_test_bid_columns = ['bid_id', 'bidder_id', 'auction', 'merchandise', 'device', 'time', 'country', 'ip', 'url']
+    
+    print("Loading test bidders data...")
+    test_bidders_df = load_csv_data(test_bidders_path, expected_test_bidder_columns)
+    
+    print("Loading test bids data...")
+    test_bids_df = load_csv_data(test_bids_path, expected_test_bid_columns)
+    
+    print(f"\nTest data loaded successfully!")
+    print(f"Test bidders: {len(test_bidders_df)} rows")
+    print(f"Test bids: {len(test_bids_df)} rows")
+    
+    return test_bidders_df, test_bids_df
+
+def validate_training_data(bidders_df: pd.DataFrame, bids_df: pd.DataFrame) -> Dict[str, Any]:
+    """
+    Run data quality checks that I've learned are important.
+    Catches issues early before they cause problems in modeling.
+    
+    Parameters:
+    bidders_df: Bidders dataframe
+    bids_df: Bids dataframe
+    
+    Returns:
+    Dict[str, Any]: Validation results with any issues found
+    """
+    validation_issues = []
+    
+    # Check for missing values in columns that can't be missing
+    critical_bidder_columns = ['bidder_id', 'outcome']
+    for col in critical_bidder_columns:
+        if col in bidders_df.columns:
+            missing_count = bidders_df[col].isnull().sum()
+            if missing_count > 0:
+                validation_issues.append(f"Missing values in bidders.{col}: {missing_count}")
+    
+    critical_bid_columns = ['bidder_id', 'auction', 'time']
+    for col in critical_bid_columns:
+        if col in bids_df.columns:
+            missing_count = bids_df[col].isnull().sum()
+            if missing_count > 0:
+                validation_issues.append(f"Missing values in bids.{col}: {missing_count}")
+    
+    # Make sure bidder IDs match between the two datasets
+    bidder_ids_in_bidders = set(bidders_df['bidder_id'].unique())
+    bidder_ids_in_bids = set(bids_df['bidder_id'].unique())
+    
+    # Check for bidders with no bidding activity
+    bidders_without_bids = bidder_ids_in_bidders - bidder_ids_in_bids
+    if len(bidders_without_bids) > 0:
+        validation_issues.append(f"Bidders without bids: {len(bidders_without_bids)}")
+    
+    # Check for bids from bidders not in the bidders file
+    unknown_bidders = bidder_ids_in_bids - bidder_ids_in_bidders
+    if len(unknown_bidders) > 0:
+        validation_issues.append(f"Bids from unknown bidders: {len(unknown_bidders)}")
+    
+    # Analyze the class balance (expect heavy imbalance toward humans)
+    if 'outcome' in bidders_df.columns:
+        outcome_dist = bidders_df['outcome'].value_counts()
+        total_samples = len(bidders_df)
+        
+        if len(outcome_dist) > 1:
+            min_class_ratio = outcome_dist.min() / total_samples
+            if min_class_ratio < 0.01:  # Very imbalanced as expected
+                validation_issues.append(f"Severe class imbalance detected. Minority class: {min_class_ratio:.3%}")
+        
+        print(f"Target distribution: {outcome_dist.to_dict()}")
+    
+    # Make sure time column is numeric for my time-based features
+    if bids_df['time'].dtype not in [np.number, 'float64', 'int64']:
+        validation_issues.append("Time column should be numeric")
+    
+    # Calculate some summary stats for my reference
+    validation_summary = {
+        'num_bidders': len(bidders_df),
+        'num_bids': len(bids_df),
+        'num_unique_bidders_with_bids': len(bidder_ids_in_bids),
+        'avg_bids_per_bidder': len(bids_df) / len(bidder_ids_in_bids) if len(bidder_ids_in_bids) > 0 else 0
+    }
+    
+    return {
+        'is_valid': len(validation_issues) == 0,
+        'issues': validation_issues,
+        'summary': validation_summary
+    }
+
+def save_processed_data(df: pd.DataFrame, filepath: str) -> str:
+    """
+    Save dataframe to CSV with automatic directory creation.
+    Handles the annoying "directory doesn't exist" errors.
+    
+    Parameters:
+    df: Dataframe to save
+    filepath: Path to save the file
+    
+    Returns:
+    str: Path where file was saved
+    """
+    try:
+        # Create the directory if it doesn't exist
+        os.makedirs(os.path.dirname(filepath), exist_ok=True)
+        
+        # Save to CSV without index
+        df.to_csv(filepath, index=False)
+        print(f"Saved {len(df)} rows to {filepath}")
+        
+        return filepath
+        
+    except Exception as e:
+        print(f"Error saving data to {filepath}: {str(e)}")
+        raise
+
+def get_data_summary(df: pd.DataFrame, name: str = "Dataset") -> Dict[str, Any]:
+    """
+    Generate comprehensive dataset summary.
+    Like df.info() and df.describe() but more organized.
+    
+    Parameters:
+    df: Dataframe to summarize
+    name: Name of the dataset for the summary
+    
+    Returns:
+    Dict[str, Any]: Complete data summary
+    """
+    summary = {
+        'name': name,
+        'shape': df.shape,
+        'columns': df.columns.tolist(),
+        'dtypes': df.dtypes.to_dict(),
+        'missing_values': df.isnull().sum().to_dict(),
+        'memory_usage_mb': df.memory_usage(deep=True).sum() / 1024 / 1024
+    }
+    
+    # Get stats for numerical columns
+    numeric_columns = df.select_dtypes(include=[np.number]).columns
+    if len(numeric_columns) > 0:
+        summary['numeric_summary'] = df[numeric_columns].describe().to_dict()
+    
+    # Get info for categorical columns
+    categorical_columns = df.select_dtypes(exclude=[np.number]).columns
+    if len(categorical_columns) > 0:
+        summary['categorical_info'] = {}
+        for col in categorical_columns:
+            summary['categorical_info'][col] = {
+                'unique_values': df[col].nunique(),
+                'most_common': df[col].value_counts().head().to_dict()
+            }
+    
+    return summary
+
+def load_data_for_training():
+    """
+    Quick function to load training data with default paths.
+    Saves me from typing the paths every time.
+    
+    Returns:
+    Tuple[pd.DataFrame, pd.DataFrame]: (bidders_df, bids_df)
+    """
+    # Default file paths - change these if your files are elsewhere
+    bidders_path = "data/raw/bidders.csv"
+    bids_path = "data/raw/bids.csv"
+    
+    return load_training_data(bidders_path, bids_path)
+
+def load_data_for_prediction(test_bidders_path: str, test_bids_path: str):
+    """
+    Quick function to load test data for making predictions.
+    
+    Parameters:
+    test_bidders_path: Path to test bidders file
+    test_bids_path: Path to test bids file
+    
+    Returns:
+    Tuple[pd.DataFrame, pd.DataFrame]: (test_bidders_df, test_bids_df)
+    """
+    return load_test_data(test_bidders_path, test_bids_path)
